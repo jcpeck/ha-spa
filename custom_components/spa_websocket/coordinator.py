@@ -48,11 +48,15 @@ from .const import (
     FLAG_EDIT,
     FLAG_FILTERING,
     FLAG_HEATING,
+    FLAG_LIGHT,
     HEARTBEAT,
     JOB_CLOCK,
+    JOB_LIGHT,
     JOB_READING,
     JOB_SETPOINT,
+    KEY_LIGHT,
     KEY_RELAY_STATUS,
+    LIGHT_CONFIRM_SECONDS,
     PATH_APP,
     PATH_SETTEMP,
     READING_AFTER_SETPOINT_SECONDS,
@@ -123,6 +127,10 @@ class SpaConnection:
         self.heating: bool = False
         self.filtering: bool = False
         self.jets_state: int = STATE_OFF
+        # The light LED from the last display frame, and when that frame came.
+        # None until a frame has been seen: an unread light is unknown, not off.
+        self.light_on: bool | None = None
+        self.display_at: datetime | None = None
 
         # What the spa says its setpoint is, read back off its own page. Never
         # what we sent -- believing our own writes is what let two days of
@@ -687,6 +695,66 @@ class SpaConnection:
             raise HomeAssistantError(str(err)) from err
         await self.async_send_raw(frame)
 
+    async def async_set_light(self, on: bool) -> None:
+        """Turn the spa light on or off, and confirm it off the panel.
+
+        The light key is a toggle, so the press is decided by a reading taken on
+        the same socket: already there means no press at all, and no reading
+        means no press either -- a blind toggle is as likely to undo the job as
+        to do it. Recorded as the light job, so a failure lights Action failed.
+        """
+        want = "on" if on else "off"
+        try:
+            frame = self.transport.key_frame(KEY_LIGHT)
+        except KeyError as err:
+            raise HomeAssistantError(str(err)) from err
+        try:
+            pressed = await self._light_on_panel(frame, on)
+        except (aiohttp.ClientError, OSError, TimeoutError) as err:
+            detail = f"turning the light {want} failed: could not reach the spa: {err}"
+            self._record(JOB_LIGHT, False, detail)
+            raise HomeAssistantError(detail) from err
+        except HomeAssistantError as err:
+            self._record(JOB_LIGHT, False, f"turning the light {want} failed: {err}")
+            raise
+        self._record(
+            JOB_LIGHT, True, f"light {want}" if pressed else f"light already {want}"
+        )
+
+    async def _light_on_panel(self, frame: str, on: bool) -> bool:
+        """Read the light, press only if it differs, and wait for the LED.
+
+        Returns whether a press was sent.
+        """
+        self.relay_linked = None
+        self._edit_reading = None
+        self._edit_open = False
+        before = self._frames
+        session = async_get_clientsession(self.hass)
+        async with session.ws_connect(self.transport.url, heartbeat=HEARTBEAT) as ws:
+            await self._listen(ws, LIGHT_CONFIRM_SECONDS)
+            if self._frames == before:
+                self._notify_listeners()
+                raise HomeAssistantError(
+                    f"the panel sent nothing in {LIGHT_CONFIRM_SECONDS}s, so where "
+                    "the light is was unknown and it was not pressed"
+                )
+            if self.light_on == on:
+                self._notify_listeners()
+                return False
+            await ws.send_str(frame)
+            confirmed = await self._listen(
+                ws, LIGHT_CONFIRM_SECONDS, done=lambda: self.light_on == on
+            )
+        self._notify_listeners()
+        if not confirmed:
+            now = "on" if self.light_on else "off"
+            raise HomeAssistantError(
+                f"pressed the light key, but the panel still shows the light {now} "
+                f"after {LIGHT_CONFIRM_SECONDS}s"
+            )
+        return True
+
     async def async_send_raw(self, code: str) -> None:
         """Send one frame exactly as given, for probing undocumented codes.
 
@@ -741,6 +809,10 @@ class SpaConnection:
 
         self.heating = bool(flags & FLAG_HEATING)
         self.filtering = bool(flags & FLAG_FILTERING)
+        # Byte 5 carries the light LED. Every display frame has it, clock frames
+        # included, so any frame is a reading of the light.
+        self.light_on = bool(int(dsp[10:12], 16) & FLAG_LIGHT)
+        self.display_at = dt_util.utcnow()
 
         # While the edit LED is lit the panel is showing the set temperature
         # rather than the water temperature. That reading is not what the

@@ -21,14 +21,18 @@ RELAY = "relay"  # WF-100: WiFi only, what the legacy web app talks to
 # what it means and the transport decides how to say it on the wire.
 KEY_JETS = "jets"
 KEY_FILTER = "filter"
+KEY_LIGHT = "light"
 
-# WF-100 web-relay codes, taken from the app page's own button handlers.
+# WF-100 web-relay codes, taken from the app page's own button handlers. There
+# is no known light code for it, so the light is a BT-200-only entity.
 RELAY_KEY_CODES = {KEY_JETS: "3", KEY_FILTER: "4"}
 
-# BT-200 keysec codes, captured from the iOS app on 7 November 2026. There is
-# also a light key, "l0", that nothing here presses. All three are toggles --
-# confirmed by pressing each twice and watching the LED bits, not assumed.
-PANEL_KEY_CODES = {KEY_JETS: "j0", KEY_FILTER: "s0"}
+# BT-200 keysec codes, captured from the iOS app on 7 November 2026. All three
+# are toggles -- confirmed by pressing each twice and watching the LED bits, not
+# assumed. This fork presses "l0" from the Light entity; the Bluetooth
+# integration for the same module (ha-smartouch-spa) confirmed on 2 November
+# that the light LED, byte 5 bit 4, follows it within one display frame.
+PANEL_KEY_CODES = {KEY_JETS: "j0", KEY_FILTER: "s0", KEY_LIGHT: "l0"}
 
 # Jets state numeric codes -> human-readable names.
 STATE_OFF = 0
@@ -146,6 +150,12 @@ READING_AFTER_SETPOINT_SECONDS = 90
 JOB_SETPOINT = "setpoint"
 JOB_CLOCK = "clock"
 JOB_READING = "reading"
+JOB_LIGHT = "light"
+
+# How long to wait for a display frame, first to learn where the light is and
+# then to see its LED follow a press. The light is a toggle: pressing without a
+# reading would be a coin toss, so silence here means no press at all.
+LIGHT_CONFIRM_SECONDS = 30
 
 # The longest a scheduled reading may listen. A confirmed setpoint says the spa
 # accepted a number; it says nothing about whether the water moved. Answering

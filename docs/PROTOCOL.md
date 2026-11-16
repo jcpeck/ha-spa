@@ -470,7 +470,12 @@ correctly on the first try, and a temperature frame followed on the next visit.
   The BT-200 agrees with the web app — its code is `s0`.
 - Whether `/wsb` accepts every frame `/wsa` does. Only the clock frame has been
   checked.
-- The BT-200's light key (`{"keysec":"l0"}`) is captured and documented but no
-  entity presses it. There is no known WF-100 equivalent, which is why nothing
-  was added: a button that works on one module and silently does nothing on the
-  other is worse than no button.
+- The BT-200's light key (`{"keysec":"l0"}`) is captured and documented. There
+  is no known WF-100 equivalent, which is why upstream added nothing: a button
+  that works on one module and silently does nothing on the other is worse than
+  no button. This fork adds a **Light** entity on the BT-200 only — none is
+  created for the WF-100 — reading byte 5 bit 4, which the Bluetooth
+  integration for the same module (ha-smartouch-spa) confirmed follows `l0`
+  within one display frame on 2 November 2026. Because the key toggles, a
+  change reads the LED first on the same socket, presses only if it differs,
+  and fails rather than presses again if the LED does not follow.

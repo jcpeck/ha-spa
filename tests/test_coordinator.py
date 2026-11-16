@@ -76,6 +76,7 @@ coord.SETPOINT_ECHO_SECONDS = 0.05
 coord.READING_AFTER_SETPOINT_SECONDS = 0.05
 coord.SETPOINT_STALL_SECONDS = 0.05
 coord.SETPOINT_CEILING_SECONDS = 0.5
+coord.LIGHT_CONFIRM_SECONDS = 0.05
 
 FRAME = '{"dsp":"007d30ce0500"}'          # 91F, heating + low jets
 FILTER_FRAME = '{"dsp":"007d30ce1000"}'   # filtering bit set
@@ -815,6 +816,76 @@ except HomeAssistantError:
 check("settled where it stopped", c.reported_setpoint, 60)
 check("stamped when it settled", c.setpoint_confirmed_at, NOW[0])
 NOW[0] = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
+# =============================================================================
+print("\n=== the light: read first, press only if needed, confirm off the LED ===")
+from spa_websocket.const import JOB_LIGHT  # noqa: E402
+
+LIGHT_OFF = FRAME                       # byte 5 = 0x00
+LIGHT_ON = '{"dsp":"007d30ce0510"}'     # the same frame with byte 5 bit 4 set
+check("fixture really is the light-off frame", LIGHT_OFF, '{"dsp":"007d30ce0500"}')
+
+c = new_panel(frames=[LIGHT_ON])
+run(c.async_refresh())
+check("light LED read from byte 5", c.light_on, True)
+check("and when", c.display_at, NOW[0])
+c = new_panel(frames=[LIGHT_OFF])
+run(c.async_refresh())
+check("light LED clear reads off", c.light_on, False)
+check("unread light is unknown, not off", new_panel().light_on, None)
+
+print("\non from off: one press, confirmed by the LED:")
+c, ws = panel_walking([LIGHT_OFF, LIGHT_ON], gap=0)
+run(c.async_set_light(True))
+check("pressed once", ws.sent, ['{"keysec":"l0"}'])
+check("light on", c.light_on, True)
+check("job confirmed", c.jobs[JOB_LIGHT].detail, "light on")
+
+print("\nalready on: no press at all:")
+c, ws = panel_walking([LIGHT_ON], gap=0)
+run(c.async_set_light(True))
+check("nothing sent", ws.sent, [])
+check("job says so", c.jobs[JOB_LIGHT].detail, "light already on")
+
+print("\noff from on: one press, confirmed:")
+c, ws = panel_walking([LIGHT_ON, LIGHT_OFF], gap=0)
+run(c.async_set_light(False))
+check("pressed once", ws.sent, ['{"keysec":"l0"}'])
+check("light off", c.light_on, False)
+check("job confirmed", c.jobs[JOB_LIGHT].ok, True)
+
+print("\na press the LED does not follow is a failure, not a second press:")
+c, ws = panel_walking([LIGHT_ON, LIGHT_ON], gap=0)
+try:
+    run(c.async_set_light(False))
+    check("raised", False, True)
+except HomeAssistantError as err:
+    check("raised", True, True)
+    check("says the light is still on", "still shows the light on" in str(err), True)
+check("pressed only once", ws.sent, ['{"keysec":"l0"}'])
+check("job recorded failed", c.jobs[JOB_LIGHT].ok, False)
+check("which turns on Action failed", "light" in c.failing, True)
+
+print("\na silent panel means no press -- a blind toggle is a coin toss:")
+c, ws = panel_walking([], gap=0)
+try:
+    run(c.async_set_light(True))
+    check("raised", False, True)
+except HomeAssistantError as err:
+    check("raised", True, True)
+    check("says nothing was heard", "sent nothing" in str(err), True)
+check("nothing sent", ws.sent, [])
+check("job recorded failed", c.jobs[JOB_LIGHT].ok, False)
+
+print("\nthe WF-100 has no light code -- refused before any socket:")
+c = new_conn()
+try:
+    run(c.async_set_light(True))
+    check("raised", False, True)
+except HomeAssistantError as err:
+    check("raised", True, True)
+    check("names the missing code", "no known code" in str(err), True)
 
 
 print("\n" + ("ALL PASS" if not fails else f"FAILURES: {fails}"))

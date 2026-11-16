@@ -14,7 +14,8 @@ absolute setpoint control, a heater sensor, and a clock setter — see
 > as it walks the setpoint to the target a degree at a time: the wait is
 > extended while each edit-mode frame comes closer, and a value counts as the
 > setpoint only when the walk reaches the target or the panel leaves edit mode
-> — never a step on the way.
+> — never a step on the way. It also adds a **Light** entity on the BT-200, read
+> from the light LED and changed only after a reading says it needs to be.
 
 ## What it creates
 
@@ -26,6 +27,7 @@ confirms what it came to do, and hangs up. See [Three jobs a day](#three-jobs-a-
 | **Jets** | `button` | Sends `"3"` |
 | **Filter** | `button` | Sends `"4"` — the web app calls this code `system` |
 | **Refresh** | `button` | Connects now and takes a reading, if the spa speaks |
+| **Light** | `light` | BT-200 only (this fork). On/off from the light LED; turning it on or off reads first, presses `l0` only if needed, and confirms off the LED |
 | **Jets status** | `sensor` (enum) | `Off` / `Low` / `High` / `Filtering` |
 | **Temperature** | `sensor` | Water temperature; `measured_at` says how old it is |
 | **Confirmed setpoint** | `sensor` | What the **spa** says its setpoint is |
