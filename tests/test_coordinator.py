@@ -684,5 +684,41 @@ check("both URLs kept", _check({"url": MINE, "fallback_url": THEIRS}, set()),
       (MINE, THEIRS, {}))
 
 
+# =============================================================================
+print("\n=== the hardware's own range: 45-104F, as the app and panel allow ===")
+from spa_websocket.const import MAX_TEMP_F, MIN_TEMP_F  # noqa: E402
+
+check("floor is the hardware's 45F", MIN_TEMP_F, 45)
+check("ceiling unchanged", MAX_TEMP_F, 104)
+
+# Built from the encoding the captured 99/100/101 frames follow (F marker with
+# its degree dot in byte 0, digits running up from byte 1, a blank hundreds
+# digit, the edit LED in byte 4) -- not itself a capture.
+SETPOINT_45 = '{"dsp":"f16d66002000"}'
+check("a two-digit setpoint decodes",
+      decode_temperature("f16d66002000"), (45, "F"))
+
+ws, _ = with_socket([SETPOINT_45])
+c = new_panel()
+coord.async_get_clientsession = lambda hass, _ws=ws: FakeSession(_ws)
+run(c.async_apply_setpoint(45))
+check("sent zero-padded, as the app does", ws.sent, ['{"temp":"045F"}'])
+check("45F confirmed off the panel", c.jobs[JOB_SETPOINT].detail,
+      "BT-200 confirms 45F")
+check("reported setpoint is 45", c.reported_setpoint, 45)
+
+print("\na setpoint caught on any visit is stamped as confirmed then:")
+print("  (otherwise a value seen on a Refresh sits beside the time of some")
+print("   older write, and the sensor's confirmed_at says the wrong thing)")
+c = new_panel(frames=[SETPOINT_FRAMES[101]])
+run(c.async_apply_setpoint(101))
+NOW[0] = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+with_socket([SETPOINT_45])
+run(c.async_refresh())
+check("the newer setpoint taken", c.reported_setpoint, 45)
+check("confirmed_at moved with it", c.setpoint_confirmed_at, NOW[0])
+NOW[0] = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+
 print("\n" + ("ALL PASS" if not fails else f"FAILURES: {fails}"))
 sys.exit(1 if fails else 0)

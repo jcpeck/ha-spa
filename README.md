@@ -8,6 +8,12 @@ and a jets sensor). It has since grown a decoded temperature readout, an
 absolute setpoint control, a heater sensor, and a clock setter — see
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for how each was worked out.
 
+> **This is a fork of [jeremystover/ha-spa](https://github.com/jeremystover/ha-spa).**
+> It differs in two ways: the target temperature goes down to the hardware's
+> 45 °F rather than upstream's deliberate 65 °F, and whenever the panel is seen
+> showing its setpoint, *Confirmed setpoint* takes that time as its
+> `confirmed_at` — not only after a write from Home Assistant.
+
 ## What it creates
 
 **Nothing stays connected.** The integration visits the spa three times a day,
@@ -21,7 +27,7 @@ confirms what it came to do, and hangs up. See [Three jobs a day](#three-jobs-a-
 | **Jets status** | `sensor` (enum) | `Off` / `Low` / `High` / `Filtering` |
 | **Temperature** | `sensor` | Water temperature; `measured_at` says how old it is |
 | **Confirmed setpoint** | `sensor` | What the **spa** says its setpoint is |
-| **Target temperature** | `number` | Setpoint, 65–104 °F; raises if unconfirmed |
+| **Target temperature** | `number` | Setpoint, 45–104 °F; raises if unconfirmed |
 | **Heating** | `binary_sensor` | Whether the heater was firing at the last reading |
 | **Filtering** | `binary_sensor` | Whether a filter cycle was running |
 | **Action failed** | `binary_sensor` (problem) | **The alarm.** On when a job did not confirm |

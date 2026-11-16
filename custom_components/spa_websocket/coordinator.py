@@ -682,6 +682,11 @@ class SpaConnection:
         if editing:
             self._edit_reading = reading[0]
             self.reported_setpoint = reading[0]
+            # The panel showing its setpoint is the confirmation, whoever caused
+            # it: a write from here, a raw frame, or the app while a visit
+            # happened to be open. Stamp it every time, or a value caught this
+            # way would sit beside the timestamp of some older confirmation.
+            self.setpoint_confirmed_at = dt_util.utcnow()
             _LOGGER.debug("Spa panel shows setpoint %s°%s", *reading)
         else:
             self.temperature, self.temperature_unit = reading

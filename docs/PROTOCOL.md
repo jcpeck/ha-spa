@@ -152,10 +152,11 @@ Limits, from the page's own `templims`:
 templims = {f: {min: 45, max: 104}, c: {min: 7.6, max: 40} };
 ```
 
-`MIN_TEMP_F` is deliberately **65**, not the hardware's 45. A 45 °F setpoint
-parks the water on the freeze-protection trigger — the controller shows `CoLd`
-below 40 °F and runs the pump until it recovers past 45 °F — fine to touch
-briefly, not to hold overnight through a freezing winter.
+Upstream holds `MIN_TEMP_F` at **65** on purpose; this fork uses the hardware's
+**45**, matching the app and the panel. Upstream's reason remains the caution
+to weigh: a 45 °F setpoint parks the water on the freeze-protection trigger —
+the controller shows `CoLd` below 40 °F and runs the pump until it recovers past
+45 °F — so it suits an unoccupied spa, not a hard freeze.
 
 `GET /app` also exposes the current setpoint as the form's `value` attribute.
 That is the readback this path uses — see **Confirming a write** for how far it

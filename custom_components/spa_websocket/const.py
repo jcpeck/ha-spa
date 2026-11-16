@@ -169,10 +169,11 @@ PATH_SETTEMP = "settemp"
 
 # The spa's own web app bounds its slider with
 #   templims = {f: {min: 45, max: 104}, c: {min: 7.6, max: 40}}
-# The floor here is deliberately higher than the hardware's 45F. A 45F setpoint
-# parks the water on the freeze-protection trigger — the controller shows CoLd
-# below 40F and runs the pump until it recovers past 45F — which is fine to
-# touch briefly but not to hold overnight through a freezing winter. 65F keeps
-# the heater off during peak hours with real margin.
-MIN_TEMP_F = 65
+# This fork uses the hardware's own floor, so Home Assistant offers the same
+# 45-104F range as the SmarTouch app and the topside panel. Upstream holds the
+# floor at 65F on purpose, and its reason still stands as a caution: a 45F
+# setpoint parks the water on the freeze-protection trigger -- the controller
+# shows CoLd below 40F and runs the pump until it recovers past 45F -- so it is
+# a choice for an unoccupied spa, not a margin against a hard freeze.
+MIN_TEMP_F = 45
 MAX_TEMP_F = 104
