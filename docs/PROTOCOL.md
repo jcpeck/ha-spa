@@ -398,6 +398,16 @@ steadily — the November capture has the three setpoints pressed appearing 32, 
 and 16 times. What is *not* established is how long edit mode persists after the
 last press, which is why the listening window is generous rather than tight.
 
+**A write walks the setpoint (this fork, inferred).** On 16 November 2026 a
+45→102 °F write and a 102→45 °F write each left the integration reporting a
+value 52 degrees along — 97 °F and 50 °F — when the fixed 45 s window closed,
+while the app showed the targets. Same distance, same time, opposite
+directions: the panel steps the setpoint one degree at a time, edit LED lit,
+roughly a second a step, so most edit frames during a long write are steps, not
+answers. Nobody has captured the walk itself yet. The fork follows it — each
+frame that moves toward the target extends the wait — and takes a value as the
+setpoint only when it is the target or the panel leaves edit mode on it.
+
 **On the WF-100, `GET /app`**, which renders the live setpoint into its form:
 
 ```html

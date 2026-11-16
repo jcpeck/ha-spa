@@ -74,6 +74,8 @@ coord.VISIT_SECONDS = 0.01
 coord.REFRESH_SECONDS = 0.01
 coord.SETPOINT_ECHO_SECONDS = 0.05
 coord.READING_AFTER_SETPOINT_SECONDS = 0.05
+coord.SETPOINT_STALL_SECONDS = 0.05
+coord.SETPOINT_CEILING_SECONDS = 0.5
 
 FRAME = '{"dsp":"007d30ce0500"}'          # 91F, heating + low jets
 FILTER_FRAME = '{"dsp":"007d30ce1000"}'   # filtering bit set
@@ -415,10 +417,13 @@ try:
 except HomeAssistantError:
     check("raised", True, True)
 
-print("\nan edit frame caught on any visit updates the reported setpoint:")
+print("\na lone edit frame on a visit is NOT taken as the setpoint:")
+print("  (a write walks the setpoint a degree at a time with the edit LED lit,")
+print("   so one edit frame may be a step on the way; 16 Nov 2026 recorded 97F")
+print("   and 50F that way for writes of 102F and 45F)")
 c = new_panel(frames=[SETPOINT_FRAMES[100]])
 run(c.async_refresh())
-check("free truth, taken", c.reported_setpoint, 100)
+check("not taken", c.reported_setpoint, None)
 check("and not mistaken for the water", c.temperature, None)
 
 
@@ -707,16 +712,108 @@ check("45F confirmed off the panel", c.jobs[JOB_SETPOINT].detail,
       "BT-200 confirms 45F")
 check("reported setpoint is 45", c.reported_setpoint, 45)
 
-print("\na setpoint caught on any visit is stamped as confirmed then:")
-print("  (otherwise a value seen on a Refresh sits beside the time of some")
-print("   older write, and the sensor's confirmed_at says the wrong thing)")
-c = new_panel(frames=[SETPOINT_FRAMES[101]])
-run(c.async_apply_setpoint(101))
+
+# =============================================================================
+print("\n=== a write walks the setpoint, one degree per step ===")
+print("  (16 Nov 2026: 45->102F and 102->45F each stopped 52 steps along,")
+print("   at 97F and 50F, when the fixed 45 s echo window closed)")
+
+import spa_websocket.decode as coord_decode  # noqa: E402
+
+_DIGIT_SEGMENTS = {v: k for k, v in coord_decode.SEGMENTS_TO_DIGIT.items()}
+
+
+def edit_frame(t):
+    """An upright edit-mode frame showing ``t`` F, built like the captures."""
+    hundreds = _DIGIT_SEGMENTS[t // 100] if t >= 100 else 0
+    body = bytes([0xF1, _DIGIT_SEGMENTS[t % 10], _DIGIT_SEGMENTS[t // 10 % 10],
+                  hundreds, 0x20, 0x00])
+    return '{"dsp":"%s"}' % body.hex()
+
+
+for t, captured in SETPOINT_FRAMES.items():
+    check(f"edit_frame({t}) matches the capture", edit_frame(t), captured)
+
+
+class TimedWS(FakeWS):
+    """Frames that arrive ``gap`` seconds apart, like a walk on the panel."""
+
+    def __init__(self, frames, gap):
+        super().__init__(frames)
+        self.gap = gap
+
+    async def receive(self):
+        if self.frames:
+            await asyncio.sleep(self.gap)
+        return await super().receive()
+
+
+def walk(start, stop):
+    step = 1 if stop >= start else -1
+    return [edit_frame(t) for t in range(start, stop + step, step)]
+
+
+def panel_walking(frames, gap):
+    c = new_panel()
+    ws = TimedWS(frames, gap)
+    coord.async_get_clientsession = lambda hass, _ws=ws: FakeSession(_ws)
+    return c, ws
+
+
+print("\na long walk outlasts the first window but keeps closing in -- confirmed:")
+c, _ = panel_walking(walk(45, 102) + [FRAME], gap=0.004)  # ~0.23 s > 0.05 s
+run(c.async_apply_setpoint(102))
+check("confirmed at the target", c.jobs[JOB_SETPOINT].detail, "BT-200 confirms 102F")
+check("reported is the target, not a step", c.reported_setpoint, 102)
+check("and the water read after it", c.temperature, 91)
+
+print("\nthe same walk downward, 102 -> 45:")
+c, _ = panel_walking(walk(102, 45), gap=0.004)
+run(c.async_apply_setpoint(45))
+check("confirmed at the target", c.jobs[JOB_SETPOINT].ok, True)
+check("reported 45, not a step", c.reported_setpoint, 45)
+
+print("\na stray all-segments frame mid-walk does not stall the wait:")
+print("  (0x7F digits read as 8; 88 on the way to 102 must not outrank the")
+print("   real steps that follow it)")
+frames = walk(45, 60) + [edit_frame(88)] + walk(61, 102)
+c, _ = panel_walking(frames, gap=0.004)
+run(c.async_apply_setpoint(102))
+check("still confirmed at the target", c.jobs[JOB_SETPOINT].ok, True)
+check("reported 102", c.reported_setpoint, 102)
+
+print("\ncut off while still closing in -- says so, and records no step:")
+c, _ = panel_walking(walk(45, 102), gap=0.012)  # ~0.68 s > 0.5 s ceiling
+try:
+    run(c.async_apply_setpoint(102))
+    check("raised", False, True)
+except HomeAssistantError as err:
+    check("raised", True, True)
+    check("says it was still stepping", "still stepping" in str(err), True)
+check("job recorded failed", c.jobs[JOB_SETPOINT].ok, False)
+check("no step taken as the setpoint", c.reported_setpoint, None)
+
+print("\na walk that stops short is a failure, not a slow success:")
+c, _ = panel_walking(walk(45, 60), gap=0.004)
+try:
+    run(c.async_apply_setpoint(102))
+    check("raised", False, True)
+except HomeAssistantError as err:
+    check("raised", True, True)
+    check("names where it stopped", "shows 60F" in str(err), True)
+    check("not called still stepping", "still stepping" in str(err), False)
+check("nothing settled without the panel leaving edit mode",
+      c.reported_setpoint, None)
+
+print("\nwhen the panel leaves edit mode, the last value it showed is settled:")
 NOW[0] = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
-with_socket([SETPOINT_45])
-run(c.async_refresh())
-check("the newer setpoint taken", c.reported_setpoint, 45)
-check("confirmed_at moved with it", c.setpoint_confirmed_at, NOW[0])
+c, _ = panel_walking(walk(45, 60) + [FRAME], gap=0.004)
+try:
+    run(c.async_apply_setpoint(102))
+except HomeAssistantError:
+    pass
+check("settled where it stopped", c.reported_setpoint, 60)
+check("stamped when it settled", c.setpoint_confirmed_at, NOW[0])
 NOW[0] = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
 

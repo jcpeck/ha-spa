@@ -110,7 +110,19 @@ CONFIRM_DELAY_SECONDS = 5
 # generous rather than tight -- but still short enough that a setpoint that
 # cannot be confirmed fails inside a minute instead of stalling the automation
 # that asked for it.
+#
+# This fork treats it as a first-sign window rather than the whole wait. A write
+# makes the panel walk its setpoint toward the target one degree at a time, edit
+# LED lit, and a long walk outlasts 45 s: on 16 November 2026 a 45->102F write
+# and a 102->45F write were each 52 steps along (97F, 50F) when the window
+# closed -- the same distance in the same time, both 5F short. That is inferred
+# from the two results, not from a capture of the walk itself. So every frame
+# that comes closer to the target buys SETPOINT_STALL_SECONDS more listening, up
+# to SETPOINT_CEILING_SECONDS in all; a walk that stops making progress still
+# fails as quickly as it did before.
 SETPOINT_ECHO_SECONDS = 45
+SETPOINT_STALL_SECONDS = 15
+SETPOINT_CEILING_SECONDS = 180
 
 # After a setpoint confirms, how long to keep the socket open waiting for a
 # WATER temperature frame.

@@ -9,10 +9,12 @@ absolute setpoint control, a heater sensor, and a clock setter — see
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for how each was worked out.
 
 > **This is a fork of [jeremystover/ha-spa](https://github.com/jeremystover/ha-spa).**
-> It differs in two ways: the target temperature goes down to the hardware's
-> 45 °F rather than upstream's deliberate 65 °F, and whenever the panel is seen
-> showing its setpoint, *Confirmed setpoint* takes that time as its
-> `confirmed_at` — not only after a write from Home Assistant.
+> It differs in two ways. The target temperature goes down to the hardware's
+> 45 °F rather than upstream's deliberate 65 °F. And a write follows the panel
+> as it walks the setpoint to the target a degree at a time: the wait is
+> extended while each edit-mode frame comes closer, and a value counts as the
+> setpoint only when the walk reaches the target or the panel leaves edit mode
+> — never a step on the way.
 
 ## What it creates
 

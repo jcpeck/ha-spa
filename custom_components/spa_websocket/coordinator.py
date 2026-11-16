@@ -58,7 +58,9 @@ from .const import (
     READING_AFTER_SETPOINT_SECONDS,
     REFRESH_SECONDS,
     RELAY_ANSWER_SECONDS,
+    SETPOINT_CEILING_SECONDS,
     SETPOINT_ECHO_SECONDS,
+    SETPOINT_STALL_SECONDS,
     STATE_NAMES,
     STATE_OFF,
     VISIT_SECONDS,
@@ -137,7 +139,15 @@ class SpaConnection:
         # setpoint write and never carried between visits: a number left over
         # from an earlier visit would confirm a write that never landed, which
         # is the September failure wearing a different hat.
+        #
+        # Not the setpoint either, until it settles: a write walks the panel's
+        # setpoint one degree at a time with the edit LED lit, so most edit
+        # frames are steps on the way. ``_edit_open`` says the last temperature
+        # frame of this visit was an edit frame; when the panel next shows the
+        # water instead, the last value it showed in edit mode is where it
+        # stopped, and only then is it taken as the spa's setpoint.
         self._edit_reading: int | None = None
+        self._edit_open = False
 
         # How each scheduled job last went. This is the alarm surface.
         self.jobs: dict[str, JobResult] = {}
@@ -185,6 +195,12 @@ class SpaConnection:
             _LOGGER.error("Spa %s job did NOT confirm: %s", job, detail)
         self._notify_listeners()
 
+    @callback
+    def _settle_setpoint(self, value: int) -> None:
+        """Take ``value`` as the spa's setpoint: the panel has stopped on it."""
+        self.reported_setpoint = value
+        self.setpoint_confirmed_at = dt_util.utcnow()
+
     @staticmethod
     def _base_url(transport: Transport) -> str:
         """Return the HTTP base for a web-relay endpoint.
@@ -204,6 +220,9 @@ class SpaConnection:
         ws: aiohttp.ClientWebSocketResponse,
         seconds: float,
         done: Callable[[], bool] | None = None,
+        progress: Callable[[], bool] | None = None,
+        stall: float = 0.0,
+        ceiling: float | None = None,
     ) -> bool:
         """Read frames for up to ``seconds``, returning once we have an answer.
 
@@ -217,9 +236,15 @@ class SpaConnection:
         which waits for the specific frame that confirms it rather than for any
         frame. While the panel is in edit mode it repeats that frame steadily,
         so there is a real answer to wait for.
+
+        ``progress`` lets a long answer keep the window open: each frame for
+        which it returns True pushes the deadline out to ``stall`` seconds from
+        then, but never past ``ceiling`` seconds from the start.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + seconds
+        start = loop.time()
+        deadline = start + seconds
+        limit = start + max(seconds, ceiling) if ceiling is not None else deadline
         while (remaining := deadline - loop.time()) > 0:
             try:
                 msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
@@ -229,6 +254,8 @@ class SpaConnection:
                 spoke = self._handle_message(msg.data)
                 if done() if done is not None else spoke:
                     return True
+                if progress is not None and progress():
+                    deadline = min(max(deadline, loop.time() + stall), limit)
             elif msg.type in (
                 aiohttp.WSMsgType.CLOSE,
                 aiohttp.WSMsgType.CLOSED,
@@ -251,6 +278,10 @@ class SpaConnection:
         """
         listen = VISIT_SECONDS if listen is None else listen
         self.relay_linked = None
+        # An edit-mode value left over from an earlier visit says nothing about
+        # where the panel is now, so it must not settle on this visit's frames.
+        self._edit_reading = None
+        self._edit_open = False
         before = self._frames
         session = async_get_clientsession(self.hass)
         async with session.ws_connect(transport.url, heartbeat=HEARTBEAT) as ws:
@@ -367,6 +398,32 @@ class SpaConnection:
             raise HomeAssistantError(f"the {transport.label} has no setpoint frame")
 
         self._edit_reading = None
+        self._edit_open = False
+
+        # The panel walks its setpoint to the target a degree at a time, so the
+        # edit frames before the confirmation are steps, not answers. Each step
+        # toward the target keeps the window open; a walk that stops does not.
+        #
+        # "Toward" is judged against the previous value shown, not the closest
+        # one so far: mid-write frames can briefly light every segment (see
+        # PROTOCOL.md), and one stray 88 on the way to 102 would otherwise beat
+        # every real step after it and let the window close mid-walk.
+        loop = asyncio.get_running_loop()
+        previous: int | None = None
+        stepped = False
+        last_step = loop.time()
+
+        def stepped_closer() -> bool:
+            nonlocal previous, stepped, last_step
+            shown = self._edit_reading
+            if shown is None or shown == previous:
+                return False
+            toward = previous is None or (shown - previous) * (temperature - previous) > 0
+            previous = shown
+            if toward:
+                stepped, last_step = True, loop.time()
+            return toward
+
         session = async_get_clientsession(self.hass)
         async with session.ws_connect(transport.url, heartbeat=HEARTBEAT) as ws:
             # Send first and ask questions afterwards. The relay's own link
@@ -379,23 +436,41 @@ class SpaConnection:
                 ws,
                 SETPOINT_ECHO_SECONDS,
                 done=lambda: self._edit_reading == temperature,
+                progress=stepped_closer,
+                stall=SETPOINT_STALL_SECONDS,
+                ceiling=SETPOINT_CEILING_SECONDS,
+            )
+            # Cut off by the ceiling while still closing in, as opposed to
+            # stopped: the two failures mean different things to the reader.
+            still_walking = (
+                not confirmed
+                and stepped
+                and loop.time() - last_step < SETPOINT_STALL_SECONDS
             )
             if confirmed:
+                # The walk ends at the target, so this is settled now rather
+                # than whenever the panel next happens to show the water.
+                self._settle_setpoint(temperature)
                 await self._listen_for_water(ws)
         shown = self._edit_reading
         self._notify_listeners()
 
+        if confirmed:
+            return
         if shown is None:
             raise HomeAssistantError(
                 f"sent {temperature}F, but the panel never showed a setpoint in "
                 f"{SETPOINT_ECHO_SECONDS}s — nothing confirms it landed"
             )
-        if shown != temperature:
+        if still_walking:
             raise HomeAssistantError(
-                f"sent {temperature}F, but the panel shows {shown}F"
+                f"sent {temperature}F; the panel was still stepping toward it "
+                f"(last showed {shown}F) when the {SETPOINT_CEILING_SECONDS}s "
+                "limit ran out"
             )
-        self.reported_setpoint = shown
-        self.setpoint_confirmed_at = dt_util.utcnow()
+        raise HomeAssistantError(
+            f"sent {temperature}F, but the panel shows {shown}F"
+        )
 
     async def _listen_for_water(self, ws: aiohttp.ClientWebSocketResponse) -> bool:
         """Wait on an open socket for a frame carrying the water temperature.
@@ -680,15 +755,19 @@ class SpaConnection:
         if reading is None:
             return True
         if editing:
+            # A step of a walk or the setpoint itself -- which one is only known
+            # once the panel stops (see ``_edit_open``), so nothing is taken as
+            # the setpoint here.
             self._edit_reading = reading[0]
-            self.reported_setpoint = reading[0]
-            # The panel showing its setpoint is the confirmation, whoever caused
-            # it: a write from here, a raw frame, or the app while a visit
-            # happened to be open. Stamp it every time, or a value caught this
-            # way would sit beside the timestamp of some older confirmation.
-            self.setpoint_confirmed_at = dt_util.utcnow()
-            _LOGGER.debug("Spa panel shows setpoint %s°%s", *reading)
+            self._edit_open = True
+            _LOGGER.debug("Spa panel shows %s°%s in edit mode", *reading)
         else:
+            if self._edit_open and self._edit_reading is not None:
+                # The panel left edit mode, so the last value it showed there is
+                # where it stopped: the spa's setpoint, whoever changed it.
+                self._settle_setpoint(self._edit_reading)
+                _LOGGER.debug("Spa setpoint settled at %s", self._edit_reading)
+            self._edit_open = False
             self.temperature, self.temperature_unit = reading
             self.measured_at = dt_util.utcnow()
             _LOGGER.debug("Spa temperature: %s°%s", *reading)
